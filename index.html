@@ -361,7 +361,8 @@
   }
   .quad-title svg { width: 18px; height: 18px; stroke: #ED7D31; }
   .quad-table {
-    width: 100%;
+    width: auto;
+    table-layout: auto;
     border-collapse: separate;
     border-spacing: 0;
     font-size: 12.5px;
@@ -373,7 +374,8 @@
     padding: 9px 10px;
     background: #ED7D31;
   }
-  .quad-table th:first-child { border-radius: 8px 0 0 8px; }
+  .quad-table th:first-child { border-radius: 8px 0 0 8px; width: 1%; white-space: nowrap; }
+  .quad-table td:first-child { width: 1%; white-space: nowrap; }
   .quad-table th:last-child { border-radius: 0 8px 8px 0; }
   .quad-table th.num, .quad-table td.num {
     text-align: right;
@@ -672,7 +674,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         Comissão Head Comercial - FL (por Semana Comercial)
       </p>
-      <div class="quad-table-scroll" style="max-height: 160px;">
+      <div class="quad-table-scroll">
       <table class="quad-table">
         <thead>
           <tr>
