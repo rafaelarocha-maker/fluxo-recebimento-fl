@@ -398,6 +398,28 @@
 </head>
 <body>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<div id="loginOverlay" style="position:fixed; inset:0; background:#f4f2ec; z-index:9999; display:flex; align-items:center; justify-content:center;">
+  <div style="background:#fff; border:1px solid #e5e3da; border-radius:14px; padding:32px 36px; width:340px; box-shadow:0 4px 16px rgba(0,0,0,0.08);">
+    <h2 style="margin:0 0 4px; font-size:19px;">Fluxo de Recebimento FL</h2>
+    <p style="margin:0 0 20px; font-size:13px; color:#78766f;">Entre com seu e-mail e senha para continuar.</p>
+    <label style="font-size:12px; font-weight:700; color:#57554d;">E-MAIL</label>
+    <input id="loginEmail" type="email" style="width:100%; box-sizing:border-box; padding:9px 10px; margin:4px 0 14px; border:1px solid #c9c8c2; border-radius:6px; font-size:14px;">
+    <label style="font-size:12px; font-weight:700; color:#57554d;">SENHA</label>
+    <input id="loginPassword" type="password" style="width:100%; box-sizing:border-box; padding:9px 10px; margin:4px 0 6px; border:1px solid #c9c8c2; border-radius:6px; font-size:14px;">
+    <p id="loginError" style="color:#b3261e; font-size:12.5px; min-height:16px; margin:4px 0 14px;"></p>
+    <button id="loginBtn" style="width:100%; padding:10px; background:#ED7D31; color:#fff; border:none; border-radius:6px; font-weight:700; font-size:14px; cursor:pointer;">Entrar</button>
+  </div>
+</div>
+
+<div id="appContent" style="display:none;">
+
+<div style="display:flex; justify-content:flex-end; margin-bottom:-8px;">
+  <span id="userEmailLabel" style="font-size:12px; color:#78766f; margin-right:10px; align-self:center;"></span>
+  <button id="logoutBtn" style="background:#fff; border:1px solid #d4d2c9; border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer;">Sair</button>
+</div>
+
 <h1>Fluxo de Recebimento FL</h1>
 <div id="syncBanner" style="display:none; margin: 6px 0 14px; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;"></div>
 
@@ -689,64 +711,141 @@
     </div>
   </div>
 </div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
-// ===== Persistência via Artifact DB (compartilhado entre visualizadores) =====
-let dbCap = null;
-let isAdminView = true;
-const CHUNK_SIZES = { vendas: 400, receb: 600, hotmart: 1500 };
+// ===============================================================
+// CONFIGURAÇÃO DO SUPABASE
+// ===============================================================
+const SUPABASE_URL = "https://lmmbbirpphvvizydixeo.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_HhPflpAQfmLNLPDwh64a2w__vpwhB8i";
 
-function chunkArray(arr, size) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let currentUser = null;
+let isAdminView = false;
+
+// ===== Login =====
+document.getElementById('loginBtn').addEventListener('click', doLogin);
+document.getElementById('loginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const senha = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  if (!email || !senha) { errEl.textContent = 'Preencha e-mail e senha.'; return; }
+  const { data, error } = await sb.auth.signInWithPassword({ email, password: senha });
+  if (error) {
+    const msgs = {
+      'Invalid login credentials': 'E-mail ou senha incorretos.',
+      'Email not confirmed': 'E-mail ainda não confirmado.',
+    };
+    errEl.textContent = msgs[error.message] || ('Erro ao entrar: ' + error.message);
+    return;
+  }
+  await onLoggedIn(data.user);
 }
 
-async function saveChunked(prefix, arr) {
-  if (!dbCap) return;
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await sb.auth.signOut();
+  currentUser = null;
+  document.getElementById('loginOverlay').style.display = 'flex';
+  document.getElementById('appContent').style.display = 'none';
+});
+
+async function onLoggedIn(user) {
+  currentUser = user;
+  document.getElementById('loginOverlay').style.display = 'none';
+  document.getElementById('appContent').style.display = 'block';
+  document.getElementById('userEmailLabel').textContent = user.email;
+  await afterLogin();
+}
+
+sb.auth.getSession().then(({ data }) => {
+  if (data.session && data.session.user) onLoggedIn(data.session.user);
+});
+
+// ===== Papel do usuário (admin ou visualizador) =====
+async function checkRole() {
   try {
-    const size = CHUNK_SIZES[prefix] || 500;
-    const chunks = chunkArray(arr, size);
-    const metaRef = dbCap.doc('data/' + prefix + '_meta');
-    let prevCount = 0;
-    try {
-      const prevSnap = await metaRef.get();
-      if (prevSnap.exists) prevCount = prevSnap.data().count || 0;
-    } catch (e) {}
-    for (let i = 0; i < chunks.length; i++) {
-      await dbCap.doc('data/' + prefix + '_' + i).set({ rows: chunks[i] });
-    }
-    for (let i = chunks.length; i < prevCount; i++) {
-      await dbCap.doc('data/' + prefix + '_' + i).delete();
-    }
-    await metaRef.set({ count: chunks.length, updatedAt: Date.now() });
-  } catch (err) {
-    console.error('Erro ao salvar ' + prefix + ' no banco:', err);
+    const { data, error } = await sb.from('roles').select('role').eq('user_id', currentUser.id).maybeSingle();
+    isAdminView = !!(data && data.role === 'admin');
+  } catch (e) {
+    isAdminView = false;
+  }
+  const banner = document.getElementById('syncBanner');
+  banner.style.display = 'block';
+  if (isAdminView) {
+    banner.style.background = '#e6f4ea';
+    banner.style.color = '#1e6b34';
+    banner.textContent = 'Conectado como administrador — o que você enviar fica visível para os visualizadores.';
+  } else {
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
+    banner.style.background = '#eef2f7';
+    banner.style.color = '#3a4a5c';
+    banner.textContent = 'Modo visualização — você está vendo os dados enviados pelo administrador.';
   }
 }
 
-async function loadChunked(prefix) {
-  if (!dbCap) return null;
+// ===== Persistência no Supabase (uma linha por base) =====
+async function saveDataset(id, payload) {
+  if (!isAdminView) return;
   try {
-    const metaSnap = await dbCap.doc('data/' + prefix + '_meta').get();
-    if (!metaSnap.exists) return null;
-    const count = metaSnap.data().count || 0;
-    let out = [];
-    for (let i = 0; i < count; i++) {
-      const snap = await dbCap.doc('data/' + prefix + '_' + i).get();
-      if (snap.exists) out = out.concat(snap.data().rows || []);
-    }
-    return out;
+    const { error } = await sb.from('app_data').upsert({ id, rows: payload, updated_at: new Date().toISOString() });
+    if (error) throw error;
   } catch (err) {
-    console.error('Erro ao carregar ' + prefix + ' do banco:', err);
+    console.error('Erro ao salvar ' + id + ' no Supabase:', err);
+    alert('Não foi possível salvar no banco (' + id + '): ' + err.message);
+  }
+}
+
+async function loadDataset(id) {
+  try {
+    const { data, error } = await sb.from('app_data').select('rows').eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data ? data.rows : null;
+  } catch (err) {
+    console.error('Erro ao carregar ' + id + ' do Supabase:', err);
     return null;
   }
 }
 
-function persistVendas() { saveChunked('vendas', DATA); }
-function persistReceb() { saveChunked('receb', RECEBIMENTO_DATA); }
-function persistHotmart() { saveChunked('hotmart', HOTMART_STATUS); }
+function persistVendas() { saveDataset('vendas', DATA); }
+function persistReceb() { saveDataset('receb', RECEBIMENTO_DATA); }
+function persistProjetado() { saveDataset('projetado', { rows: CONTRATOS_PROJETADO_DATA, columns: CONTRATOS_PROJETADO_COLUMNS }); }
+
+function reloadVendasDataLocal(newData) {
+  const _persist = persistVendas;
+  persistVendas = function () {};
+  reloadVendasData(newData);
+  persistVendas = _persist;
+}
+
+async function afterLogin() {
+  await checkRole();
+
+  const [vendasRows, recebRows, projetadoPayload] = await Promise.all([
+    loadDataset('vendas'), loadDataset('receb'), loadDataset('projetado')
+  ]);
+
+  if (vendasRows && vendasRows.length) reloadVendasDataLocal(vendasRows);
+  if (recebRows && recebRows.length) {
+    RECEBIMENTO_DATA = recebRows;
+    populateRecSelects();
+    deriveContratosPorMes();
+    contratosPorMesRendered = false;
+    applyRecFilters();
+  }
+  if (projetadoPayload && projetadoPayload.rows && projetadoPayload.rows.length) {
+    CONTRATOS_PROJETADO_DATA = projetadoPayload.rows;
+    CONTRATOS_PROJETADO_COLUMNS = projetadoPayload.columns || [];
+    contratosProjetadoRendered = false;
+    populateProjSelects();
+    renderContratosProjetado();
+  }
+}
 
 let RECEBIMENTO_DATA = [];
 let CONTRATOS_POR_MES_DATA = [];
@@ -1947,6 +2046,7 @@ uploadProntoProjInput.addEventListener('change', (e) => {
       Object.keys(projColFilters).forEach(k => delete projColFilters[k]);
       populateProjSelects();
       renderContratosProjetado();
+      persistProjetado();
       uploadProntoProjStatus.style.color = '#1e6b34';
       uploadProntoProjStatus.textContent = newRows.length.toLocaleString('pt-BR') + ' contratos carregados de ' + file.name + '.';
     } catch (err) {
@@ -2375,73 +2475,6 @@ uploadInput.addEventListener('change', (e) => {
 
 
 
-
-// ===== Inicialização: conectar ao banco, carregar dados e detectar permissão =====
-async function initSync() {
-  const banner = document.getElementById('syncBanner');
-  dbCap = (typeof claude !== 'undefined' && claude && claude.use) ? await claude.use('db') : null;
-
-  if (!dbCap) {
-    banner.style.display = 'block';
-    banner.style.background = '#fff8e1';
-    banner.style.color = '#8a6d00';
-    banner.textContent = 'Funcionando localmente neste navegador (sem sincronização). Publique o artefato para compartilhar os dados com outras pessoas.';
-    return;
-  }
-
-  try {
-    await dbCap.doc('data/_permtest').set({ t: Date.now() });
-    isAdminView = true;
-  } catch (e) {
-    isAdminView = false;
-  }
-
-  if (!isAdminView) {
-    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
-    banner.style.display = 'block';
-    banner.style.background = '#eef2f7';
-    banner.style.color = '#3a4a5c';
-    banner.textContent = 'Modo visualização — você está vendo os dados enviados pelo administrador.';
-  } else {
-    banner.style.display = 'block';
-    banner.style.background = '#e6f4ea';
-    banner.style.color = '#1e6b34';
-    banner.textContent = 'Conectado ao banco compartilhado — os dados que você enviar ficam visíveis para quem tiver acesso a este link.';
-  }
-
-  const [vendasRows, recebRows, hotmartRows] = await Promise.all([
-    loadChunked('vendas'), loadChunked('receb'), loadChunked('hotmart')
-  ]);
-
-  if (vendasRows && vendasRows.length) {
-    reloadVendasDataLocal(vendasRows);
-  }
-  if (recebRows && recebRows.length) {
-    RECEBIMENTO_DATA = recebRows;
-    populateRecSelects();
-    deriveContratosPorMes();
-    contratosPorMesRendered = false;
-    applyRecFilters();
-  }
-  if (hotmartRows && hotmartRows.length) {
-    HOTMART_STATUS = hotmartRows;
-  }
-  if (DATA.length && HOTMART_STATUS.length) {
-    buildContratosProjetado();
-    contratosProjetadoRendered = false;
-    populateProjSelects();
-    renderContratosProjetado();
-  }
-}
-
-function reloadVendasDataLocal(newData) {
-  const _persist = persistVendas;
-  persistVendas = function () {};
-  reloadVendasData(newData);
-  persistVendas = _persist;
-}
-
-initSync();
 </script>
 </body>
 </html>
